@@ -48,10 +48,27 @@ FAQAT quyidagi JSON formatda javob qaytaring:
 }
 """
 
+def pick_working_model():
+    available = []
+    for m in client.models.list():
+        name = m.name.replace("models/", "")
+        actions = getattr(m, "supported_actions", []) or []
+        if "generateContent" in actions and "gemini" in name and "embedding" not in name and "image" not in name:
+            available.append(name)
+    print("Kalit uchun ochiq modellar:", available)
+    for preferred in ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.0-flash"]:
+        for a in available:
+            if preferred in a:
+                return a
+    if available:
+        return available[0]
+    raise RuntimeError("API kalitda birorta ham matnli Gemini modeli topilmadi.")
+
 def generate_script():
-    print("1. Gemini 3.0 Flash orqali Stickman ssenariy yaratilmoqda...")
+    model_name = pick_working_model()
+    print(f"1. Tanlangan ishchi model: {model_name}")
     response = client.models.generate_content(
-        model="gemini-3.0-flash",
+        model=model_name,
         contents="Yangi, juda qiziqarli 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
