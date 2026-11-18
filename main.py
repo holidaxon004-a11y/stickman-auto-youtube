@@ -49,65 +49,116 @@ FAQAT quyidagi JSON formatda javob qaytaring:
 }
 """
 
+
 def generate_script():
-    models_to_try = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
+    models_to_try = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+    ]
     last_err = None
     for model_name in models_to_try:
         try:
-            print(f"1. Model sinab ko'rilmoqda: {model_name}")
+            print("1. Model sinab ko'rilmoqda:", model_name)
             response = client.models.generate_content(
                 model=model_name,
                 contents="Yangi, juda qiziqarli va hayotiy 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     response_mime_type="application/json",
-                    temperature=0.8
-                )
+                    temperature=0.8,
+                ),
             )
-            print(f"Muvaffaqiyatli! Ishlatilgan model: {model_name}")
+            print("Muvaffaqiyatli! Ishlatilgan model:", model_name)
             return json.loads(response.text)
         except Exception as e:
-            print(f"{model_name} xato berdi: {e}")
+            print(model_name, "xato berdi:", e)
             last_err = e
-    raise RuntimeError(f"Hech bir model ishlamadi: {last_err}")
+    raise RuntimeError("Hech bir model ishlamadi: " + str(last_err))
+
 
 def generate_image(prompt_en, output_path):
-    full_prompt = f"{prompt_en}. {STYLE_LOCK}"
+    full_prompt = prompt_en + ". " + STYLE_LOCK
     encoded_prompt = requests.utils.quote(full_prompt)
     for attempt in range(1, 4):
         try:
             seed = int(time.time()) + attempt
-            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={seed}"
+            url = (
+                "https://image.pollinations.ai/prompt/"
+                + encoded_prompt
+                + "?width=1280&height=720&nologo=true&seed="
+                + str(seed)
+            )
             resp = requests.get(url, timeout=90)
             if resp.status_code == 200 and len(resp.content) > 5000:
                 with open(output_path, "wb") as f:
                     f.write(resp.content)
                 return True
         except Exception as e:
-            print(f"Rasm urinish {attempt} xatosi: {e}")
+            print("Rasm urinish", attempt, "xatosi:", e)
         time.sleep(3)
     raise RuntimeError("Rasm generatsiya qilib bo'lmadi.")
+
 
 async def generate_voice(text_uz, output_path):
     communicate = edge_tts.Communicate(text_uz, "uz-UZ-SardorNeural", rate="+5%")
     await communicate.save(output_path)
 
+
 def get_audio_duration(audio_path):
     cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        audio_path,
     ]
     return float(subprocess.check_output(cmd).decode().strip())
+
 
 def create_scene_clip(img_path, audio_path, move, clip_path):
     duration = get_audio_duration(audio_path) + 0.4
     frames = int(duration * 30)
+    f_str = str(frames)
 
     if move == "zoom_in":
-        zoom_expr = f"zoom='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        zoom_expr = "zoom='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
     elif move == "zoom_out":
-        zoom_expr = f"zoom='if(lte(zoom,1.0),1.25,max(1.001,zoom-0.0015))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        zoom_expr = "zoom='if(lte(zoom,1.0),1.25,max(1.001,zoom-0.0015))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
     elif move == "pan_right":
-        zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(on/{frames})':y='ih/2-(ih/zoom/2)'"
+        zoom_expr = "zoom='1.15':x='(iw-iw/zoom)*(on/" + f_str + ")':y='ih/2-(ih/zoom/2)'"
     elif move == "pan_left":
-        zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(
+        zoom_expr = "zoom='1.15':x='(iw-iw/zoom)*(1-on/" + f_str + ")':y='ih/2-(ih/zoom/2)'"
+    else:
+        zoom_expr = "zoom='1.12':x='iw/2-(iw/zoom/2)+sin(on*0.8)*8':y='ih/2-(ih/zoom/2)+cos(on*0.8)*6'"
+
+    vf = (
+        "scale=2560:1440,zoompan="
+        + zoom_expr
+        + ":d="
+        + f_str
+        + ":s=1280x720:fps=30,format=yuv420p"
+    )
+
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loop",
+            "1",
+            "-i",
+            img_path,
+            "-i",
+            audio_path,
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "22",
