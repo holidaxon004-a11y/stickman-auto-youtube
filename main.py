@@ -24,14 +24,15 @@ STYLE_LOCK = (
 )
 
 SYSTEM_PROMPT = """
-Siz professional "Nima uchun?" (ilm-fan, psixologiya, inson miyasi) mavzusidagi Stickman video rejissyori va ssenariynavisisiz.
-Bitta qiziqarli "Nima uchun...?" mavzusini tanlang va uni 8 sahnadan iborat (~60 soniyalik) dinamik stickman video paketi ko'rinishida tayyorlang.
+Siz professional "Nima uchun?" (ilm-fan, psixologiya, inson miyasi va hayotiy qiziqarli faktlar) mavzusidagi Stickman video rejissyori va ssenariynavisisiz.
+Sizning vazifangiz — bitta qiziqarli "Nima uchun...?" mavzusini tanlash va uni 8 sahnadan iborat (~60 soniyalik) dinamik stickman video paketi ko'rinishida tayyorlash.
 
 QOIDALAR:
-1. O'zbekcha matn (narration_uz): Har bir sahna uchun 14-22 so'zdan iborat, jonli, og'zaki o'zbek tilida ("siz" shaklida) yozilsin. Uydirma statistika ishlatmang.
-2. Har bir sahna bitta aniq harakat yoyiga (anticipation -> action -> settle) ega bo'lsin. Kadrlar almashib tursin (yaqin plan, uzoq plan, pastki rakurs, qiyshiq kadr).
-3. Rasm prompti (image_prompt_en): Ingliz tilida, birinchi kadrdagi eng keskin harakat lahzasini (anticipation yoki impact) tasvirlasin. Ichida HECH QANDAY matn, harf, raqam yoki rang kodi (#...) bo'lmasin.
-4. Kamera harakati (camera_move): "zoom_in", "zoom_out", "pan_right", "pan_left", "impact_shake" dan birini tanlang.
+1. Mavzu: Odamlar o'ziga beradigan, lekin javobini bilmaydigan qiziqarli savol (masalan: "Nima uchun miyamiz dangasalikni yaxshi ko'radi?", "Nima uchun uyquda yiqilib tushgandek cho'chib uyg'onamiz?" va h.k.).
+2. O'zbekcha matn (narration_uz): Har bir sahna uchun 14-22 so'zdan iborat, do'stona, jonli, og'zaki o'zbek tilida ("siz" shaklida) yozilsin. Uydirma statistika yoki soxta tadqiqotlar ishlatmang.
+3. Har bir sahna bitta aniq harakat yoyiga (anticipation -> action -> settle) ega bo'lsin. Kadrlar almashib tursin (yaqin plan, uzoq plan, pastki rakurs, qiyshiq kadr).
+4. Rasm prompti (image_prompt_en): Ingliz tilida, birinchi kadrdagi eng keskin harakat lahzasini (anticipation yoki impact) tasvirlasin. Ichida HECH QANDAY matn, harf, raqam yoki rang kodi (#...) bo'lmasin.
+5. Kamera harakati (camera_move): "zoom_in", "zoom_out", "pan_right", "pan_left", "impact_shake" dan birini tanlang.
 
 FAQAT quyidagi JSON formatda javob qaytaring:
 {
@@ -48,46 +49,44 @@ FAQAT quyidagi JSON formatda javob qaytaring:
 }
 """
 
-def pick_working_model():
-    available = []
-    for m in client.models.list():
-        name = m.name.replace("models/", "")
-        actions = getattr(m, "supported_actions", []) or []
-        if "generateContent" in actions and "gemini" in name and "embedding" not in name and "image" not in name:
-            available.append(name)
-    print("Kalit uchun ochiq modellar:", available)
-    for preferred in ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.0-flash"]:
-        for a in available:
-            if preferred in a:
-                return a
-    if available:
-        return available[0]
-    raise RuntimeError("API kalitda birorta ham matnli Gemini modeli topilmadi.")
-
 def generate_script():
-    model_name = pick_working_model()
-    print(f"1. Tanlangan ishchi model: {model_name}")
-    response = client.models.generate_content(
-        model=model_name,
-        contents="Yangi, juda qiziqarli 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            temperature=0.8
-        )
-    )
-    return json.loads(response.text)
+    models_to_try = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
+    last_err = None
+    for model_name in models_to_try:
+        try:
+            print(f"1. Model sinab ko'rilmoqda: {model_name}")
+            response = client.models.generate_content(
+                model=model_name,
+                contents="Yangi, juda qiziqarli va hayotiy 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.8
+                )
+            )
+            print(f"Muvaffaqiyatli! Ishlatilgan model: {model_name}")
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"{model_name} xato berdi: {e}")
+            last_err = e
+    raise RuntimeError(f"Hech bir model ishlamadi: {last_err}")
 
 def generate_image(prompt_en, output_path):
     full_prompt = f"{prompt_en}. {STYLE_LOCK}"
     encoded_prompt = requests.utils.quote(full_prompt)
-    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={int(time.time())}"
-    resp = requests.get(url, timeout=90)
-    if resp.status_code == 200:
-        with open(output_path, "wb") as f:
-            f.write(resp.content)
-        return True
-    raise RuntimeError(f"Rasm generatsiya xatosi: {resp.status_code}")
+    for attempt in range(1, 4):
+        try:
+            seed = int(time.time()) + attempt
+            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={seed}"
+            resp = requests.get(url, timeout=90)
+            if resp.status_code == 200 and len(resp.content) > 5000:
+                with open(output_path, "wb") as f:
+                    f.write(resp.content)
+                return True
+        except Exception as e:
+            print(f"Rasm urinish {attempt} xatosi: {e}")
+        time.sleep(3)
+    raise RuntimeError("Rasm generatsiya qilib bo'lmadi.")
 
 async def generate_voice(text_uz, output_path):
     communicate = edge_tts.Communicate(text_uz, "uz-UZ-SardorNeural", rate="+5%")
@@ -111,53 +110,4 @@ def create_scene_clip(img_path, audio_path, move, clip_path):
     elif move == "pan_right":
         zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(on/{frames})':y='ih/2-(ih/zoom/2)'"
     elif move == "pan_left":
-        zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(1-on/{frames})':y='ih/2-(ih/zoom/2)'"
-    else:
-        zoom_expr = f"zoom='1.12':x='iw/2-(iw/zoom/2)+sin(on*0.8)*8':y='ih/2-(ih/zoom/2)+cos(on*0.8)*6'"
-
-    vf = f"scale=2560:1440,zoompan={zoom_expr}:d={frames}:s=1280x720:fps=30,format=yuv420p"
-
-    subprocess.run([
-        "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", audio_path,
-        "-vf", vf, "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-        "-c:a", "aac", "-b:a", "192k", "-t", str(duration), clip_path
-    ], check=True)
-
-def main():
-    os.makedirs("build", exist_ok=True)
-    pack = generate_script()
-    print(f"Mavzu tanlandi: {pack['title_uz']}")
-
-    clip_files = []
-    for idx, scene in enumerate(pack["scenes"], start=1):
-        print(f"--- Sahna {idx}/{len(pack['scenes'])} tayyorlanmoqda ---")
-        img_path = f"build/scene_{idx}.png"
-        aud_path = f"build/scene_{idx}.mp3"
-        clip_path = f"build/clip_{idx}.mp4"
-
-        generate_image(scene["image_prompt_en"], img_path)
-        asyncio.run(generate_voice(scene["narration_uz"], aud_path))
-        create_scene_clip(img_path, aud_path, scene.get("camera_move", "zoom_in"), clip_path)
-        clip_files.append(clip_path)
-
-    concat_list = "build/clips.txt"
-    with open(concat_list, "w") as f:
-        for c in clip_files:
-            f.write(f"file '{os.path.abspath(c)}'\n")
-
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", concat_list, "-c", "copy", "final_video.mp4"
-    ], check=True)
-
-    with open("metadata.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "title": pack["title_uz"],
-            "description": pack["description_uz"],
-            "tags": ["nima uchun", "stickman", "qiziqarli faktlar", "psixologiya", "ilm fan"]
-        }, f, ensure_ascii=False, indent=2)
-
-    print("TAYYOR! Video muvaffaqiyatli yig'ildi: final_video.mp4")
-
-if __name__ == "__main__":
-    main()
+        zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(
