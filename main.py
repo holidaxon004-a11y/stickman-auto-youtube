@@ -23,31 +23,18 @@ STYLE_LOCK = (
     "No visible words, letters, or numbers anywhere in the image."
 )
 
-SYSTEM_PROMPT = """
-Siz professional "Nima uchun?" (ilm-fan, psixologiya, inson miyasi va hayotiy qiziqarli faktlar) mavzusidagi Stickman video rejissyori va ssenariynavisisiz.
-Sizning vazifangiz — bitta qiziqarli "Nima uchun...?" mavzusini tanlash va uni 8 sahnadan iborat (~60 soniyalik) dinamik stickman video paketi ko'rinishida tayyorlash.
-
-QOIDALAR:
-1. Mavzu: Odamlar o'ziga beradigan, lekin javobini bilmaydigan qiziqarli savol (masalan: "Nima uchun miyamiz dangasalikni yaxshi ko'radi?", "Nima uchun uyquda yiqilib tushgandek cho'chib uyg'onamiz?" va h.k.).
-2. O'zbekcha matn (narration_uz): Har bir sahna uchun 14-22 so'zdan iborat, do'stona, jonli, og'zaki o'zbek tilida ("siz" shaklida) yozilsin. Uydirma statistika yoki soxta tadqiqotlar ishlatmang.
-3. Har bir sahna bitta aniq harakat yoyiga (anticipation -> action -> settle) ega bo'lsin. Kadrlar almashib tursin (yaqin plan, uzoq plan, pastki rakurs, qiyshiq kadr).
-4. Rasm prompti (image_prompt_en): Ingliz tilida, birinchi kadrdagi eng keskin harakat lahzasini (anticipation yoki impact) tasvirlasin. Ichida HECH QANDAY matn, harf, raqam yoki rang kodi (#...) bo'lmasin.
-5. Kamera harakati (camera_move): "zoom_in", "zoom_out", "pan_right", "pan_left", "impact_shake" dan birini tanlang.
-
-FAQAT quyidagi JSON formatda javob qaytaring:
-{
-  "title_uz": "YouTube uchun qiziqarli sarlavha (Nima uchun...?)",
-  "description_uz": "Video haqida qisqacha tavsif",
-  "scenes": [
-    {
-      "scene_number": 1,
-      "narration_uz": "O'zbek tilidagi jonli nutq matni",
-      "image_prompt_en": "Sahna tavsifi ingliz tilida...",
-      "camera_move": "zoom_in"
-    }
-  ]
-}
-"""
+SYSTEM_PROMPT = (
+    "Siz professional 'Nima uchun?' (ilm-fan, psixologiya, inson miyasi va hayotiy qiziqarli faktlar) mavzusidagi Stickman video rejissyori va ssenariynavisisiz. "
+    "Sizning vazifangiz — bitta qiziqarli 'Nima uchun...?' mavzusini tanlash va uni 8 sahnadan iborat (~60 soniyalik) dinamik stickman video paketi ko'rinishida tayyorlash. "
+    "QOIDALAR: "
+    "1. Mavzu: Odamlar o'ziga beradigan, lekin javobini bilmaydigan qiziqarli savol. "
+    "2. O'zbekcha matn (narration_uz): Har bir sahna uchun 14-22 so'zdan iborat, do'stona, jonli, og'zaki o'zbek tilida ('siz' shaklida) yozilsin. Uydirma statistika ishlatmang. "
+    "3. Har bir sahna bitta aniq harakat yoyiga (anticipation -> action -> settle) ega bo'lsin. Kadrlar almashib tursin (yaqin plan, uzoq plan, pastki rakurs, qiyshiq kadr). "
+    "4. Rasm prompti (image_prompt_en): Ingliz tilida, birinchi kadrdagi eng keskin harakat lahzasini (anticipation yoki impact) tasvirlasin. Ichida HECH QANDAY matn, harf, raqam yoki rang kodi bo'lmasin. "
+    "5. Kamera harakati (camera_move): 'zoom_in', 'zoom_out', 'pan_right', 'pan_left', 'impact_shake' dan birini tanlang. "
+    "FAQAT quyidagi JSON formatda javob qaytaring: "
+    '{"title_uz": "YouTube sarlavha", "description_uz": "Tavsif", "scenes": [{"scene_number": 1, "narration_uz": "Matn", "image_prompt_en": "Prompt", "camera_move": "zoom_in"}]}'
+)
 
 
 def generate_script():
@@ -162,3 +149,72 @@ def create_scene_clip(img_path, audio_path, move, clip_path):
             "fast",
             "-crf",
             "22",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-t",
+            str(duration),
+            clip_path,
+        ],
+        check=True,
+    )
+
+
+def main():
+    os.makedirs("build", exist_ok=True)
+    pack = generate_script()
+    print("Mavzu tanlandi:", pack["title_uz"])
+
+    clip_files = []
+    total = len(pack["scenes"])
+    for idx, scene in enumerate(pack["scenes"], start=1):
+        print("--- Sahna", idx, "/", total, "tayyorlanmoqda ---")
+        img_path = "build/scene_" + str(idx) + ".png"
+        aud_path = "build/scene_" + str(idx) + ".mp3"
+        clip_path = "build/clip_" + str(idx) + ".mp4"
+
+        generate_image(scene["image_prompt_en"], img_path)
+        asyncio.run(generate_voice(scene["narration_uz"], aud_path))
+        create_scene_clip(img_path, aud_path, scene.get("camera_move", "zoom_in"), clip_path)
+        clip_files.append(clip_path)
+
+    concat_list = "build/clips.txt"
+    with open(concat_list, "w") as f:
+        for c in clip_files:
+            f.write("file '" + os.path.abspath(c) + "'\n")
+
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            concat_list,
+            "-c",
+            "copy",
+            "final_video.mp4",
+        ],
+        check=True,
+    )
+
+    with open("metadata.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "title": pack["title_uz"],
+                "description": pack["description_uz"],
+                "tags": ["nima uchun", "stickman", "qiziqarli faktlar", "psixologiya", "ilm fan"],
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    print("TAYYOR! Video muvaffaqiyatli yig'ildi: final_video.mp4")
+
+
+if __name__ == "__main__":
+    main()
