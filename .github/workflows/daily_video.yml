@@ -1,0 +1,38 @@
+﻿name: Daily Stickman Auto YouTube
+
+on:
+  schedule:
+    # Har kuni UTC 09:00 da (Toshkent vaqti bilan 14:00 da) ishga tushadi va 16:00 ga rejalashtiradi
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodni yuklab olish
+        uses: actions/checkout@v4
+
+      - name: Python o'rnatish
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: FFmpeg va kutubxonalarni o'rnatish
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Maxfiy token va cookie fayllarini tiklash
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+          FLOW_COOKIES_JSON: ${{ secrets.FLOW_COOKIES_JSON }}
+        run: |
+          printf '%s' "$YOUTUBE_TOKEN_JSON" > token.json
+          printf '%s' "$FLOW_COOKIES_JSON" > flow_cookies.json
+
+      - name: Video yasash, montaj qilish va YouTube'ga 16:00 ga joylash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python main.py

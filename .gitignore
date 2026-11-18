@@ -1,0 +1,8 @@
+﻿token.json
+client_secret.json
+flow_cookies.json
+*.mp4
+*.mp3
+*.jpg
+clips.txt
+__pycache__/
