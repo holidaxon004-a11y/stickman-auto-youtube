@@ -1,174 +1,183 @@
-﻿import os
+import os
 import json
+import time
 import asyncio
-import datetime
-import subprocess
 import requests
-import edge_tts
-from PIL import Image, ImageDraw, ImageFont
-from playwright.sync_api import sync_playwright
+import subprocess
 from google import genai
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from google.genai import types
+import edge_tts
 
-GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-client = genai.Client(api_key=GEMINI_KEY)
+# 1. API va sozlamalar
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 1. SSENARIY VA VIDIQ (95-100 BALL) SEO GENERATSIYASI
-def generate_plan_and_seo() -> dict:
-    prompt = """
-    Sen Stickman YouTube kanali prodyuseri va vidIQ SEO ekspertisan.
-    Bugungi kun uchun qiziqarli, dinamik stickman qisqa hikoya/sarguzasht g'oyasi va vidIQ shkalasida 95-100 ball oladigan SEO yarat.
-    Qoidalar:
-    - story_narration: 60-90 soniyalik qiziqarli hikoya matni (o'zbek tilida, jonli va intrigali).
-    - scene_prompts: Hikoyaga mos 4 ta inglizcha stickman rasm/video prompti.
-    - title: 50-60 belgi, asosiy kalit so'z boshida, CTR yuqori.
-    - description: Birinchi 2 qatorda asosiy kalit so'zlar takrorlansin, kamida 200 so'z, teglar tabiiy singdirilgan.
-    - tags: 15-20 ta kalit so'z ro'yxati (umumiy 450-500 belgi).
-    - thumbnail_text: Thumbnail uchun 2-3 ta portlovchi so'z (KATTA HARFLARDA).
-    - thumbnail_prompt: Stickman uslubida yorqin, emotsional fon rasmi uchun inglizcha prompt (matnsiz).
+# Stickman Style Lock (sizning skill faylingizdan olingan asosiy standart)
+STYLE_LOCK = (
+    "Classic whiteboard stickman animation. Completely flat, uniform, digitally clean white paper background "
+    "with faint paper grain and no gradient, no vignette, no drop shadow, no three-dimensional surface. "
+    "All figures and objects are drawn in solid black hand-drawn marker line, uniform medium-thick stroke weight "
+    "throughout, with slightly imperfect wobbling hand-drawn edges and visible marker tip texture. "
+    "Stick figures: a plain circle head, a single line torso that bends under force, two line arms, two line legs, "
+    "simple rounded joints, no neck, no hands, no feet. Minimal face: two small black dot eyes and a single curved mouth. "
+    "Drawn motion marks: speed lines, motion arcs, impact bursts in black marker. "
+    "Single accent color: warm marker red-orange used sparingly as a flat highlight on the most important element. "
+    "No visible words, letters, or numbers anywhere in the image."
+)
 
-    Faqat quyidagi JSON formatda javob ber:
-    {"story_narration": "...", "scene_prompts": ["...", "...", "...", "..."], "title": "...", "description": "...", "tags": ["..."], "thumbnail_text": "...", "thumbnail_prompt": "..."}
-    """
-    resp = client.models.generate_content(
+SYSTEM_PROMPT = f"""
+Siz professional "Nima uchun?" (ilm-fan, psixologiya, inson miyasi va hayotiy qiziqarli faktlar) mavzusidagi Stickman video rejissyori va ssenariynavisisiz.
+Sizning vazifangiz — bitta qiziqarli "Nima uchun...?" mavzusini tanlash va uni 8 sahnadan iborat (~60 soniyalik) dinamik stickman video paketi ko'rinishida tayyorlash.
+
+QOIDALAR:
+1. Mavzu: Odamlar o'ziga beradigan, lekin javobini bilmaydigan qiziqarli savol (masalan: "Nima uchun miyamiz dangasalikni yaxshi ko'radi?", "Nima uchun uyquda yiqilib tushgandek cho'chib uyg'onamiz?" va h.k.).
+2. O'zbekcha matn (narration_uz): Har bir sahna uchun 14–22 so'zdan iborat, do'stona, jonli, og'zaki o'zbek tilida ("siz" shaklida) yozilsin. Hech qanday uydirma statistika yoki soxta tadqiqotlar qo'shilmasin.
+3. Har bir sahna bitta aniq harakat yoyiga (anticipation -> action -> settle) ega bo'lsin. Bir xil zerikarli kadrlar takrorlanmasin (yaqin plan, uzoq plan, pastki rakurs, qiyshiq kadrlar almashib tursin).
+4. Rasm prompti (image_prompt_en): Ingliz tilida, birinchi kadrdagi eng keskin harakat lahzasini (anticipation yoki impact) tasvirlasin. Ichida HECH QANDAY matn, harf, raqam yoki rang kodi (#...) bo'lmasin!
+5. Kamera harakati (camera_move): Quyidagilardan birini tanlang: "zoom_in", "zoom_out", "pan_right", "pan_left", "impact_shake".
+
+FAQAT quyidagi JSON formatda javob qaytaring (boshqa hech qanday izoh yozmang):
+{{
+  "title_uz": "YouTube uchun qiziqarli sarlavha (Nima uchun...?)",
+  "description_uz": "Video haqida qisqacha tavsif va teglar",
+  "scenes": [
+    {{
+      "scene_number": 1,
+      "narration_uz": "O'zbek tilidagi jonli nutq matni",
+      "image_prompt_en": "Sahna tavsifi ingliz tilida...",
+      "camera_move": "zoom_in"
+    }}
+  ]
+}}
+"""
+
+def generate_script():
+    print("1. Gemini (gemini-2.5-flash) orqali Stickman ssenariy yaratilmoqda...")
+    response = client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=prompt,
-        config={"response_mime_type": "application/json"}
+        contents="Yangi, juda qiziqarli va hayotiy 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            temperature=0.8
+        )
     )
-    return json.loads(resp.text)
+    return json.loads(response.text)
 
-# 2. OVOZLASHTIRISH (100% BEPUL EDGE-TTS)
-async def create_voiceover(text: str, out_audio="voice.mp3"):
-    communicate = edge_tts.Communicate(text, voice="uz-UZ-SardorNeural", rate="+5%")
-    await communicate.save(out_audio)
-
-# 3. GOOGLE FLOW ORQALI VIDEO OLISH (ZAXIRA STICKMAN GENERATOR BILAN)
-def generate_visuals(scene_prompts: list) -> list:
-    video_clips = []
-    if os.path.exists("flow_cookies.json"):
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"]
-                )
-                context = browser.new_context()
-                with open("flow_cookies.json", "r", encoding="utf-8") as f:
-                    context.add_cookies(json.load(f))
-                page = context.new_page()
-                page.goto("https://flow.google.com", timeout=60000)
-                page.wait_for_timeout(5000)
-                textarea = page.locator("textarea").first
-                if textarea.is_visible(timeout=8000):
-                    textarea.fill(scene_prompts[0] + ", 2d stickman animation, clean white background")
-                    page.keyboard.press("Enter")
-                    page.wait_for_timeout(45000)
-                    video_el = page.locator("video").first
-                    if video_el.is_visible(timeout=15000):
-                        src = video_el.get_attribute("src")
-                        if src and src.startswith("http"):
-                            with open("flow_clip.mp4", "wb") as vf:
-                                vf.write(requests.get(src).content)
-                            video_clips.append("flow_clip.mp4")
-                browser.close()
-        except Exception as e:
-            print(f"Flow AI o'tkazib yuborildi (zaxira stickman generator ishlaydi): {e}")
-
-    # Agar Flow AI dan video olinmasa, 4 ta stickman kadr yaratib dinamik videoga aylantiramiz
-    if not video_clips:
-        for idx, sp in enumerate(scene_prompts):
-            img_url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(sp + ', 2d stickman comic animation style, bold black lines, vibrant background, 16:9')}?width=1280&height=720&nologo=true"
-            img_path = f"scene_{idx}.jpg"
-            with open(img_path, "wb") as f:
-                f.write(requests.get(img_url, timeout=60).content)
-            clip_path = f"clip_{idx}.mp4"
-            subprocess.run([
-                "ffmpeg", "-y", "-loop", "1", "-i", img_path,
-                "-vf", "scale=1920:1080,zoompan=z='min(zoom+0.001,1.15)':d=200:s=1280x720",
-                "-t", "8", "-c:v", "libx264", "-pix_fmt", "yuv420p", clip_path
-            ], check=True)
-            video_clips.append(clip_path)
-
-    return video_clips
-
-# 4. AVTOMATIK MONTAJ (FFMPEG)
-def assemble_video(clips: list, audio_path="voice.mp3", output_video="final_video.mp4"):
-    with open("clips.txt", "w", encoding="utf-8") as f:
-        for c in clips:
-            f.write(f"file '{c}'\n")
-
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "clips.txt",
-        "-c", "copy", "merged_raw.mp4"
-    ], check=True)
-
-    subprocess.run([
-        "ffmpeg", "-y", "-stream_loop", "-1", "-i", "merged_raw.mp4",
-        "-i", audio_path, "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-c:a", "aac", "-shortest", output_video
-    ], check=True)
-    return output_video
-
-# 5. THUMBNAIL YARATISH
-def create_thumbnail(image_prompt: str, overlay_text: str, output_path="thumbnail.jpg"):
-    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(image_prompt + ', stickman 2d animation style, dramatic lighting, high contrast, youtube thumbnail, no text')}?width=1280&height=720&nologo=true"
-    with open("raw_bg.jpg", "wb") as f:
-        f.write(requests.get(url, timeout=60).content)
-
-    img = Image.open("raw_bg.jpg").convert("RGB")
-    draw = ImageDraw.Draw(img)
+def generate_image(prompt_en, output_path):
+    full_prompt = f"{prompt_en}. {STYLE_LOCK}"
+    # 1-urinish: Google Imagen 3
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 95)
-    except:
-        font = ImageFont.load_default()
+        result = client.models.generate_images(
+            model="imagen-3.0-generate-002",
+            prompt=full_prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="16:9",
+                output_mime_type="image/png"
+            )
+        )
+        for generated_image in result.generated_images:
+            generated_image.image.save(output_path)
+            return True
+    except Exception as e:
+        print(f"Imagen API xatosi ({e}), zaxira generatorga o'tilmoqda...")
 
-    draw.text((60, 520), overlay_text, font=font, fill="#FFE600", stroke_width=8, stroke_fill="#000000")
-    img.save(output_path, quality=95)
-    return output_path
+    # 2-urinish (Zaxira): Pollinations AI (bepul, kalitsiz)
+    encoded_prompt = requests.utils.quote(full_prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true&seed={int(time.time())}"
+    resp = requests.get(url, timeout=60)
+    if resp.status_code == 200:
+        with open(output_path, "wb") as f:
+            f.write(resp.content)
+        return True
+    raise RuntimeError("Rasm generatsiya qilib bo'lmadi.")
 
-# 6. YOUTUBE'GA YUKLASH VA SOAT 16:00 (UTC+5) GA REJALASHTIRISH
-def upload_to_youtube(video_path: str, thumb_path: str, seo_data: dict):
-    scopes = [
-        "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.force-ssl"
+async def generate_voice(text_uz, output_path):
+    # O'zbek tilidagi tabiiy erkak ovozi (Sardor)
+    communicate = edge_tts.Communicate(text_uz, "uz-UZ-SardorNeural", rate="+5%")
+    await communicate.save(output_path)
+
+def get_audio_duration(audio_path):
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", audio_path
     ]
-    creds = Credentials.from_authorized_user_file("token.json", scopes)
-    youtube = build("youtube", "v3", credentials=creds)
+    res = subprocess.check_output(cmd).decode().strip()
+    return float(res)
 
-    # Toshkent vaqti 16:00 (UTC+5) = UTC 11:00
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    publish_time = now_utc.replace(hour=11, minute=0, second=0, microsecond=0)
-    if now_utc >= publish_time:
-        publish_time += datetime.timedelta(days=1)
+def create_scene_clip(img_path, audio_path, move, clip_path):
+    duration = get_audio_duration(audio_path) + 0.4
+    frames = int(duration * 30)
 
-    body = {
-        "snippet": {
-            "title": seo_data["title"][:100],
-            "description": seo_data["description"],
-            "tags": seo_data["tags"],
-            "categoryId": "24"
-        },
-        "status": {
-            "privacyStatus": "private",
-            "publishAt": publish_time.isoformat(),
-            "selfDeclaredMadeForKids": False
-        }
-    }
+    # Statik rasm bo'lib qolmasligi uchun dinamik kamera harakatlari
+    if move == "zoom_in":
+        zoom_expr = f"zoom='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif move == "zoom_out":
+        zoom_expr = f"zoom='if(lte(zoom,1.0),1.25,max(1.001,zoom-0.0015))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+    elif move == "pan_right":
+        zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(on/{frames})':y='ih/2-(ih/zoom/2)'"
+    elif move == "pan_left":
+        zoom_expr = f"zoom='1.15':x='(iw-iw/zoom)*(1-on/{frames})':y='ih/2-(ih/zoom/2)'"
+    else:  # impact_shake
+        zoom_expr = f"zoom='1.12':x='iw/2-(iw/zoom/2)+sin(on*0.8)*8':y='ih/2-(ih/zoom/2)+cos(on*0.8)*6'"
 
-    media = MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/mp4")
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-    response = request.execute()
-    video_id = response["id"]
+    vf = (
+        f"scale=2560:1440,"
+        f"zoompan={zoom_expr}:d={frames}:s=1280x720:fps=30,"
+        f"format=yuv420p"
+    )
 
-    youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(thumb_path)).execute()
-    print(f"MUVAFFAQIYATLI YUKLANDI! Video ID: {video_id} | Rejalashtirilgan vaqt (UTC): {publish_time.isoformat()}")
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", img_path,
+        "-i", audio_path,
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", str(duration),
+        clip_path
+    ]
+    subprocess.run(cmd, check=True)
+
+def main():
+    os.makedirs("build", exist_ok=True)
+    pack = generate_script()
+    print(f"Mavzu tanlandi: {pack['title_uz']}")
+
+    clip_files = []
+    for idx, scene in enumerate(pack["scenes"], start=1):
+        print(f"--- Sahna {idx}/{len(pack['scenes'])} tayyorlanmoqda ---")
+        img_path = f"build/scene_{idx}.png"
+        aud_path = f"build/scene_{idx}.mp3"
+        clip_path = f"build/clip_{idx}.mp4"
+
+        generate_image(scene["image_prompt_en"], img_path)
+        asyncio.run(generate_voice(scene["narration_uz"], aud_path))
+        create_scene_clip(img_path, aud_path, scene.get("camera_move", "zoom_in"), clip_path)
+        clip_files.append(clip_path)
+
+    # Barcha sahnalarni bitta videoga birlashtirish
+    concat_list = "build/clips.txt"
+    with open(concat_list, "w") as f:
+        for c in clip_files:
+            f.write(f"file '{os.path.abspath(c)}'\n")
+
+    final_video = "final_video.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", concat_list, "-c", "copy", final_video
+    ], check=True)
+
+    # Metadata faylini saqlash (YouTube yuklovchi skript o'qishi uchun)
+    with open("metadata.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "title": pack["title_uz"],
+            "description": pack["description_uz"],
+            "tags": ["nima uchun", "stickman", "qiziqarli faktlar", "psixologiya", "ilm fan"]
+        }, f, ensure_ascii=False, indent=2)
+
+    print("TAYYOR! Video muvaffaqiyatli yig'ildi:", final_video)
 
 if __name__ == "__main__":
-    plan = generate_plan_and_seo()
-    asyncio.run(create_voiceover(plan["story_narration"]))
-    clips = generate_visuals(plan["scene_prompts"])
-    final_vid = assemble_video(clips)
-    thumb = create_thumbnail(plan["thumbnail_prompt"], plan["thumbnail_text"])
-    upload_to_youtube(final_vid, thumb, plan)
+    main()
