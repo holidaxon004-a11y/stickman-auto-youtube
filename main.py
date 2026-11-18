@@ -52,9 +52,9 @@ FAQAT quyidagi JSON formatda javob qaytaring (boshqa hech qanday izoh yozmang):
 """
 
 def generate_script():
-    print("1. Gemini (gemini-2.5-flash) orqali Stickman ssenariy yaratilmoqda...")
+    print("1. Gemini (gemini-3.0-flash) orqali Stickman ssenariy yaratilmoqda...")
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.0-flash",
         contents="Yangi, juda qiziqarli va hayotiy 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
