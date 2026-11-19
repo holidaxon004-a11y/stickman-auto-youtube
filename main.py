@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import shutil
 import asyncio
 import requests
 import subprocess
@@ -67,73 +68,37 @@ def generate_script():
     raise RuntimeError("Hech bir model ishlamadi: " + str(last_err))
 
 
-def generate_image(prompt_en, output_path):
+def generate_image(prompt_en, output_path, fallback_img=None):
     full_prompt = prompt_en + ". " + STYLE_LOCK
-
-    # 1-usul: Google Gemini Nano Banana / Image modeli (juda tez, 3-5 soniya)
-    for img_model in ["gemini-nano-banana-2.1", "gemini-2.5-flash-image"]:
-        try:
-            print("   Rasm chizilmoqda (" + img_model + ")...", flush=True)
-            resp = client.models.generate_content(
-                model=img_model,
-                contents="Generate a 16:9 widescreen illustration: " + full_prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                ),
-            )
-            for cand in getattr(resp, "candidates", []) or []:
-                for part in getattr(cand.content, "parts", []) or []:
-                    inline = getattr(part, "inline_data", None)
-                    if inline and getattr(inline, "data", None):
-                        with open(output_path, "wb") as f:
-                            f.write(inline.data)
-                        print("   Rasm tayyor (" + img_model + ")", flush=True)
-                        return True
-        except Exception as e:
-            print("   " + img_model + " o'tmadi:", e, flush=True)
-
-    # 2-usul: Google Imagen 3
-    try:
-        print("   Rasm chizilmoqda (imagen-3.0)...", flush=True)
-        res = client.models.generate_images(
-            model="imagen-3.0-generate-002",
-            prompt=full_prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio="16:9",
-                output_mime_type="image/png",
-            ),
-        )
-        if getattr(res, "generated_images", None):
-            res.generated_images[0].image.save(output_path)
-            print("   Rasm tayyor (imagen-3.0)", flush=True)
-            return True
-    except Exception as e:
-        print("   Imagen o'tmadi:", e, flush=True)
-
-    # 3-usul (Zaxira): Pollinations (qat'iy 25 soniyalik timeout bilan)
     encoded_prompt = requests.utils.quote(full_prompt)
-    for attempt in range(1, 3):
+    for attempt in range(1, 6):
         try:
-            print("   Zaxira rasm urinish", attempt, "...", flush=True)
-            seed = int(time.time()) + attempt
+            print("   Rasm urinish", attempt, "...", flush=True)
+            seed = int(time.time()) + attempt * 17
             url = (
                 "https://image.pollinations.ai/prompt/"
                 + encoded_prompt
-                + "?width=1280&height=720&nologo=true&seed="
+                + "?width=1280&height=720&nologo=true&model=flux&seed="
                 + str(seed)
             )
-            resp = requests.get(url, timeout=(10, 25))
+            resp = requests.get(url, timeout=(15, 45))
             if resp.status_code == 200 and len(resp.content) > 5000:
                 with open(output_path, "wb") as f:
                     f.write(resp.content)
-                print("   Rasm tayyor (pollinations)", flush=True)
-                return True
+                print("   Rasm tayyor!", flush=True)
+                return output_path
+            else:
+                print("   Server javobi:", resp.status_code, flush=True)
         except Exception as e:
-            print("   Pollinations xatosi:", e, flush=True)
-        time.sleep(2)
+            print("   Urinish xatosi:", e, flush=True)
+        time.sleep(5)
 
-    raise RuntimeError("Rasm generatsiya qilib bo'lmadi.")
+    if fallback_img and os.path.exists(fallback_img):
+        print("   Zaxira rasm ishlatildi (jarayon to'xtamadi)", flush=True)
+        shutil.copy(fallback_img, output_path)
+        return output_path
+
+    raise RuntimeError("Birinchi rasmni ham yuklab bo'lmadi.")
 
 
 async def generate_voice(text_uz, output_path):
@@ -215,6 +180,7 @@ def main():
     print("Mavzu tanlandi:", pack["title_uz"], flush=True)
 
     clip_files = []
+    last_good_img = None
     total = len(pack["scenes"])
     for idx, scene in enumerate(pack["scenes"], start=1):
         print("--- Sahna", idx, "/", total, "tayyorlanmoqda ---", flush=True)
@@ -222,10 +188,11 @@ def main():
         aud_path = "build/scene_" + str(idx) + ".mp3"
         clip_path = "build/clip_" + str(idx) + ".mp4"
 
-        generate_image(scene["image_prompt_en"], img_path)
+        last_good_img = generate_image(scene["image_prompt_en"], img_path, last_good_img)
         asyncio.run(generate_voice(scene["narration_uz"], aud_path))
         create_scene_clip(img_path, aud_path, scene.get("camera_move", "zoom_in"), clip_path)
         clip_files.append(clip_path)
+        time.sleep(4)
 
     concat_list = "build/clips.txt"
     with open(concat_list, "w") as f:
