@@ -43,11 +43,12 @@ def generate_script():
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
+        "gemini-2.5-pro",
     ]
     last_err = None
     for model_name in models_to_try:
         try:
-            print("1. Model sinab ko'rilmoqda:", model_name)
+            print("1. Model sinab ko'rilmoqda:", model_name, flush=True)
             response = client.models.generate_content(
                 model=model_name,
                 contents="Yangi, juda qiziqarli va hayotiy 'Nima uchun...?' mavzusida 8 sahnalik stickman video ssenariysini yarat.",
@@ -57,19 +58,64 @@ def generate_script():
                     temperature=0.8,
                 ),
             )
-            print("Muvaffaqiyatli! Ishlatilgan model:", model_name)
+            print("Muvaffaqiyatli! Ishlatilgan model:", model_name, flush=True)
             return json.loads(response.text)
         except Exception as e:
-            print(model_name, "xato berdi:", e)
+            print(model_name, "xato berdi:", e, flush=True)
             last_err = e
+            time.sleep(3)
     raise RuntimeError("Hech bir model ishlamadi: " + str(last_err))
 
 
 def generate_image(prompt_en, output_path):
     full_prompt = prompt_en + ". " + STYLE_LOCK
-    encoded_prompt = requests.utils.quote(full_prompt)
-    for attempt in range(1, 4):
+
+    # 1-usul: Google Gemini Nano Banana / Image modeli (juda tez, 3-5 soniya)
+    for img_model in ["gemini-nano-banana-2.1", "gemini-2.5-flash-image"]:
         try:
+            print("   Rasm chizilmoqda (" + img_model + ")...", flush=True)
+            resp = client.models.generate_content(
+                model=img_model,
+                contents="Generate a 16:9 widescreen illustration: " + full_prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                ),
+            )
+            for cand in getattr(resp, "candidates", []) or []:
+                for part in getattr(cand.content, "parts", []) or []:
+                    inline = getattr(part, "inline_data", None)
+                    if inline and getattr(inline, "data", None):
+                        with open(output_path, "wb") as f:
+                            f.write(inline.data)
+                        print("   Rasm tayyor (" + img_model + ")", flush=True)
+                        return True
+        except Exception as e:
+            print("   " + img_model + " o'tmadi:", e, flush=True)
+
+    # 2-usul: Google Imagen 3
+    try:
+        print("   Rasm chizilmoqda (imagen-3.0)...", flush=True)
+        res = client.models.generate_images(
+            model="imagen-3.0-generate-002",
+            prompt=full_prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="16:9",
+                output_mime_type="image/png",
+            ),
+        )
+        if getattr(res, "generated_images", None):
+            res.generated_images[0].image.save(output_path)
+            print("   Rasm tayyor (imagen-3.0)", flush=True)
+            return True
+    except Exception as e:
+        print("   Imagen o'tmadi:", e, flush=True)
+
+    # 3-usul (Zaxira): Pollinations (qat'iy 25 soniyalik timeout bilan)
+    encoded_prompt = requests.utils.quote(full_prompt)
+    for attempt in range(1, 3):
+        try:
+            print("   Zaxira rasm urinish", attempt, "...", flush=True)
             seed = int(time.time()) + attempt
             url = (
                 "https://image.pollinations.ai/prompt/"
@@ -77,14 +123,16 @@ def generate_image(prompt_en, output_path):
                 + "?width=1280&height=720&nologo=true&seed="
                 + str(seed)
             )
-            resp = requests.get(url, timeout=90)
+            resp = requests.get(url, timeout=(10, 25))
             if resp.status_code == 200 and len(resp.content) > 5000:
                 with open(output_path, "wb") as f:
                     f.write(resp.content)
+                print("   Rasm tayyor (pollinations)", flush=True)
                 return True
         except Exception as e:
-            print("Rasm urinish", attempt, "xatosi:", e)
-        time.sleep(3)
+            print("   Pollinations xatosi:", e, flush=True)
+        time.sleep(2)
+
     raise RuntimeError("Rasm generatsiya qilib bo'lmadi.")
 
 
@@ -164,12 +212,12 @@ def create_scene_clip(img_path, audio_path, move, clip_path):
 def main():
     os.makedirs("build", exist_ok=True)
     pack = generate_script()
-    print("Mavzu tanlandi:", pack["title_uz"])
+    print("Mavzu tanlandi:", pack["title_uz"], flush=True)
 
     clip_files = []
     total = len(pack["scenes"])
     for idx, scene in enumerate(pack["scenes"], start=1):
-        print("--- Sahna", idx, "/", total, "tayyorlanmoqda ---")
+        print("--- Sahna", idx, "/", total, "tayyorlanmoqda ---", flush=True)
         img_path = "build/scene_" + str(idx) + ".png"
         aud_path = "build/scene_" + str(idx) + ".mp3"
         clip_path = "build/clip_" + str(idx) + ".mp4"
@@ -213,7 +261,7 @@ def main():
             indent=2,
         )
 
-    print("TAYYOR! Video muvaffaqiyatli yig'ildi: final_video.mp4")
+    print("TAYYOR! Video muvaffaqiyatli yig'ildi: final_video.mp4", flush=True)
 
 
 if __name__ == "__main__":
