@@ -1,10 +1,11 @@
 import os
 import json
 import time
-import shutil
+import math
+import random
 import asyncio
-import requests
 import subprocess
+from PIL import Image, ImageDraw, ImageFilter
 from google import genai
 from google.genai import types
 import edge_tts
@@ -12,29 +13,16 @@ import edge_tts
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-STYLE_LOCK = (
-    "Classic whiteboard stickman animation. Completely flat, uniform, digitally clean white paper background "
-    "with faint paper grain and no gradient, no vignette, no drop shadow, no three-dimensional surface. "
-    "All figures and objects are drawn in solid black hand-drawn marker line, uniform medium-thick stroke weight "
-    "throughout, with slightly imperfect wobbling hand-drawn edges and visible marker tip texture. "
-    "Stick figures: a plain circle head, a single line torso that bends under force, two line arms, two line legs, "
-    "simple rounded joints, no neck, no hands, no feet. Minimal face: two small black dot eyes and a single curved mouth. "
-    "Drawn motion marks: speed lines, motion arcs, impact bursts in black marker. "
-    "Single accent color: warm marker red-orange used sparingly as a flat highlight on the most important element. "
-    "No visible words, letters, or numbers anywhere in the image."
-)
-
 SYSTEM_PROMPT = (
     "Siz professional 'Nima uchun?' (ilm-fan, psixologiya, inson miyasi va hayotiy qiziqarli faktlar) mavzusidagi Stickman video rejissyori va ssenariynavisisiz. "
     "Sizning vazifangiz — bitta qiziqarli 'Nima uchun...?' mavzusini tanlash va uni 8 sahnadan iborat (~60 soniyalik) dinamik stickman video paketi ko'rinishida tayyorlash. "
     "QOIDALAR: "
     "1. Mavzu: Odamlar o'ziga beradigan, lekin javobini bilmaydigan qiziqarli savol. "
     "2. O'zbekcha matn (narration_uz): Har bir sahna uchun 14-22 so'zdan iborat, do'stona, jonli, og'zaki o'zbek tilida ('siz' shaklida) yozilsin. Uydirma statistika ishlatmang. "
-    "3. Har bir sahna bitta aniq harakat yoyiga (anticipation -> action -> settle) ega bo'lsin. Kadrlar almashib tursin (yaqin plan, uzoq plan, pastki rakurs, qiyshiq kadr). "
-    "4. Rasm prompti (image_prompt_en): Ingliz tilida, birinchi kadrdagi eng keskin harakat lahzasini (anticipation yoki impact) tasvirlasin. Ichida HECH QANDAY matn, harf, raqam yoki rang kodi bo'lmasin. "
-    "5. Kamera harakati (camera_move): 'zoom_in', 'zoom_out', 'pan_right', 'pan_left', 'impact_shake' dan birini tanlang. "
+    "3. Har bir sahna uchun mos poza (pose) tanlang: 'think', 'shock', 'run', 'idea', 'brain', 'point', 'tired', 'happy'. "
+    "4. Kamera harakati (camera_move): 'zoom_in', 'zoom_out', 'pan_right', 'pan_left', 'impact_shake' dan birini tanlang. "
     "FAQAT quyidagi JSON formatda javob qaytaring: "
-    '{"title_uz": "YouTube sarlavha", "description_uz": "Tavsif", "scenes": [{"scene_number": 1, "narration_uz": "Matn", "image_prompt_en": "Prompt", "camera_move": "zoom_in"}]}'
+    '{"title_uz": "YouTube sarlavha", "description_uz": "Tavsif", "scenes": [{"scene_number": 1, "narration_uz": "Matn", "pose": "think", "camera_move": "zoom_in"}]}'
 )
 
 
@@ -68,37 +56,137 @@ def generate_script():
     raise RuntimeError("Hech bir model ishlamadi: " + str(last_err))
 
 
-def generate_image(prompt_en, output_path, fallback_img=None):
-    full_prompt = prompt_en + ". " + STYLE_LOCK
-    encoded_prompt = requests.utils.quote(full_prompt)
-    for attempt in range(1, 6):
-        try:
-            print("   Rasm urinish", attempt, "...", flush=True)
-            seed = int(time.time()) + attempt * 17
-            url = (
-                "https://image.pollinations.ai/prompt/"
-                + encoded_prompt
-                + "?width=1280&height=720&nologo=true&model=flux&seed="
-                + str(seed)
+def wobble_line(draw, pts, fill=(20, 20, 20), width=10):
+    for i in range(len(pts) - 1):
+        x1, y1 = pts[i]
+        x2, y2 = pts[i + 1]
+        steps = max(int(math.hypot(x2 - x1, y2 - y1) / 18), 2)
+        seg = []
+        for s in range(steps + 1):
+            t = s / steps
+            jitter = 0 if (s == 0 or s == steps) else random.uniform(-1.8, 1.8)
+            seg.append((x1 + (x2 - x1) * t + jitter, y1 + (y2 - y1) * t + jitter))
+        draw.line(seg, fill=fill, width=width, joint="curve")
+
+
+def draw_stickman_scene(pose, scene_idx, output_path):
+    random.seed(scene_idx * 97)
+    W, H = 1920, 1080
+    img = Image.new("RGB", (W, H), (252, 252, 250))
+    draw = ImageDraw.Draw(img)
+
+    black = (22, 22, 24)
+    accent = (232, 68, 42)  # Marker red-orange accent
+
+    # Yer chizig'i (Whiteboard ground line)
+    wobble_line(draw, [(260, 880), (1660, 880)], fill=black, width=8)
+
+    cx = 860 if pose in ("point", "brain", "idea") else 960
+    head_y = 330
+    r = 85
+
+    # Tana egilishi (pose ga qarab)
+    lean = -35 if pose == "shock" else (45 if pose == "run" else (25 if pose == "tired" else 0))
+    hx = cx + lean
+    hy = head_y + (35 if pose == "tired" else 0)
+
+    # Bosh (qo'lda chizilgan marker doirasi)
+    for off in range(-2, 3):
+        draw.ellipse(
+            [hx - r + off, hy - r - off, hx + r - off, hy + r + off],
+            outline=black,
+            width=10,
+        )
+
+    # Ko'zlar va og'iz
+    eye_shift = 18 if pose in ("point", "idea", "brain") else 0
+    draw.ellipse([hx - 32 + eye_shift, hy - 18, hx - 16 + eye_shift, hy - 2], fill=black)
+    draw.ellipse([hx + 16 + eye_shift, hy - 18, hx + 32 + eye_shift, hy - 2], fill=black)
+
+    if pose == "shock":
+        draw.ellipse([hx - 16, hy + 18, hx + 16, hy + 52], outline=black, width=8)
+    elif pose == "tired":
+        wobble_line(draw, [(hx - 28, hy + 38), (hx, hy + 24), (hx + 28, hy + 38)], fill=black, width=8)
+    else:
+        draw.arc([hx - 30, hy + 8, hx + 30, hy + 46], start=15, end=165, fill=black, width=8)
+
+    # Gavda (Torso)
+    neck = (hx, hy + r)
+    hip = (cx, 650)
+    wobble_line(draw, [neck, ((neck[0] + hip[0]) // 2 + lean // 3, 530), hip], fill=black, width=11)
+
+    shoulder = (hx + lean // 4, hy + r + 45)
+
+    # Qo'llar va oyoqlar + Red-Orange aksent elementlari
+    if pose == "think":
+        wobble_line(draw, [shoulder, (hx - 95, 520), (hx - 35, hy + r - 10)], fill=black, width=10)
+        wobble_line(draw, [shoulder, (cx + 95, 540), (cx + 45, 640)], fill=black, width=10)
+        wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
+        wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
+        # Qizil-olovrang savol belgisi
+        draw.arc([hx + 135, hy - 140, hx + 225, hy - 40], start=180, end=45, fill=accent, width=14)
+        wobble_line(draw, [(hx + 215, hy - 55), (hx + 180, hy - 10)], fill=accent, width=14)
+        draw.ellipse([hx + 170, hy + 8, hx + 190, hy + 28], fill=accent)
+
+    elif pose == "shock":
+        wobble_line(draw, [shoulder, (hx - 130, 360), (hx - 150, 260)], fill=black, width=10)
+        wobble_line(draw, [shoulder, (hx + 130, 360), (hx + 150, 260)], fill=black, width=10)
+        wobble_line(draw, [hip, (cx - 95, 765), (cx - 110, 880)], fill=black, width=11)
+        wobble_line(draw, [hip, (cx + 85, 765), (cx + 95, 880)], fill=black, width=11)
+        # Harakat chaqnashlari (Impact bursts)
+        for bx, by in [(hx - 175, hy - 90), (hx + 175, hy - 90), (hx, hy - 155)]:
+            wobble_line(draw, [(bx - 25, by - 25), (bx + 25, by + 25)], fill=accent, width=11)
+            wobble_line(draw, [(bx + 25, by - 25), (bx - 25, by + 25)], fill=accent, width=11)
+
+    elif pose == "run":
+        wobble_line(draw, [shoulder, (hx + 120, 440), (hx + 190, 390)], fill=black, width=10)
+        wobble_line(draw, [shoulder, (hx - 110, 500), (hx - 160, 560)], fill=black, width=10)
+        wobble_line(draw, [hip, (cx + 120, 740), (cx + 185, 865)], fill=black, width=11)
+        wobble_line(draw, [hip, (cx - 110, 750), (cx - 185, 845)], fill=black, width=11)
+        # Tezlik chiziqlari (Speed lines)
+        for sy in [330, 430, 540, 640]:
+            wobble_line(draw, [(420, sy), (640, sy)], fill=accent, width=10)
+
+    elif pose in ("idea", "brain"):
+        wobble_line(draw, [shoulder, (hx + 125, 420), (hx + 185, 310)], fill=black, width=10)
+        wobble_line(draw, [shoulder, (cx - 85, 540), (cx - 55, 640)], fill=black, width=10)
+        wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
+        wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
+        # Qizil-olovrang lampochka / miya impulsi
+        bx, by = hx + 250, 270
+        draw.ellipse([bx - 55, by - 55, bx + 55, by + 55], outline=accent, width=13)
+        wobble_line(draw, [(bx - 25, by + 55), (bx + 25, by + 55)], fill=black, width=10)
+        for ang in range(0, 360, 45):
+            rad = math.radians(ang)
+            wobble_line(
+                draw,
+                [(bx + math.cos(rad) * 75, by + math.sin(rad) * 75),
+                 (bx + math.cos(rad) * 110, by + math.sin(rad) * 110)],
+                fill=accent,
+                width=10,
             )
-            resp = requests.get(url, timeout=(15, 45))
-            if resp.status_code == 200 and len(resp.content) > 5000:
-                with open(output_path, "wb") as f:
-                    f.write(resp.content)
-                print("   Rasm tayyor!", flush=True)
-                return output_path
-            else:
-                print("   Server javobi:", resp.status_code, flush=True)
-        except Exception as e:
-            print("   Urinish xatosi:", e, flush=True)
-        time.sleep(5)
 
-    if fallback_img and os.path.exists(fallback_img):
-        print("   Zaxira rasm ishlatildi (jarayon to'xtamadi)", flush=True)
-        shutil.copy(fallback_img, output_path)
-        return output_path
+    elif pose == "point":
+        wobble_line(draw, [shoulder, (hx + 150, 450), (hx + 270, 430)], fill=black, width=10)
+        wobble_line(draw, [shoulder, (cx - 85, 540), (cx - 55, 640)], fill=black, width=10)
+        wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
+        wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
+        # Nishon doirasi (Target)
+        tx, ty = 1320, 430
+        draw.ellipse([tx - 95, ty - 95, tx + 95, ty + 95], outline=black, width=10)
+        draw.ellipse([tx - 45, ty - 45, tx + 45, ty + 45], outline=accent, width=12)
+        draw.ellipse([tx - 14, ty - 14, tx + 14, ty + 14], fill=accent)
 
-    raise RuntimeError("Birinchi rasmni ham yuklab bo'lmadi.")
+    else:  # tired / happy
+        wobble_line(draw, [shoulder, (cx - 95, 560), (cx - 85, 660)], fill=black, width=10)
+        wobble_line(draw, [shoulder, (cx + 95, 560), (cx + 85, 660)], fill=black, width=10)
+        wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
+        wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
+        # Energiya / yurak belgisi
+        draw.ellipse([hx + 140, hy - 110, hx + 210, hy - 40], outline=accent, width=12)
+
+    img.save(output_path, "PNG")
+    print("   Stickman sahna chizildi (" + pose + ")", flush=True)
 
 
 async def generate_voice(text_uz, output_path):
@@ -180,19 +268,20 @@ def main():
     print("Mavzu tanlandi:", pack["title_uz"], flush=True)
 
     clip_files = []
-    last_good_img = None
     total = len(pack["scenes"])
+    poses_cycle = ["think", "shock", "brain", "run", "point", "idea", "tired", "happy"]
+
     for idx, scene in enumerate(pack["scenes"], start=1):
         print("--- Sahna", idx, "/", total, "tayyorlanmoqda ---", flush=True)
         img_path = "build/scene_" + str(idx) + ".png"
         aud_path = "build/scene_" + str(idx) + ".mp3"
         clip_path = "build/clip_" + str(idx) + ".mp4"
 
-        last_good_img = generate_image(scene["image_prompt_en"], img_path, last_good_img)
+        pose = scene.get("pose") or poses_cycle[(idx - 1) % len(poses_cycle)]
+        draw_stickman_scene(pose, idx, img_path)
         asyncio.run(generate_voice(scene["narration_uz"], aud_path))
         create_scene_clip(img_path, aud_path, scene.get("camera_move", "zoom_in"), clip_path)
         clip_files.append(clip_path)
-        time.sleep(4)
 
     concat_list = "build/clips.txt"
     with open(concat_list, "w") as f:
