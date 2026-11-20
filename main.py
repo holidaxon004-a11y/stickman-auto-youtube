@@ -4,10 +4,15 @@ import time
 import math
 import random
 import asyncio
+import datetime
 import subprocess
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 from google import genai
 from google.genai import types
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 import edge_tts
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -76,21 +81,18 @@ def draw_stickman_scene(pose, scene_idx, output_path):
     draw = ImageDraw.Draw(img)
 
     black = (22, 22, 24)
-    accent = (232, 68, 42)  # Marker red-orange accent
+    accent = (232, 68, 42)
 
-    # Yer chizig'i (Whiteboard ground line)
     wobble_line(draw, [(260, 880), (1660, 880)], fill=black, width=8)
 
     cx = 860 if pose in ("point", "brain", "idea") else 960
     head_y = 330
     r = 85
 
-    # Tana egilishi (pose ga qarab)
     lean = -35 if pose == "shock" else (45 if pose == "run" else (25 if pose == "tired" else 0))
     hx = cx + lean
     hy = head_y + (35 if pose == "tired" else 0)
 
-    # Bosh (qo'lda chizilgan marker doirasi)
     for off in range(-2, 3):
         draw.ellipse(
             [hx - r + off, hy - r - off, hx + r - off, hy + r + off],
@@ -98,7 +100,6 @@ def draw_stickman_scene(pose, scene_idx, output_path):
             width=10,
         )
 
-    # Ko'zlar va og'iz
     eye_shift = 18 if pose in ("point", "idea", "brain") else 0
     draw.ellipse([hx - 32 + eye_shift, hy - 18, hx - 16 + eye_shift, hy - 2], fill=black)
     draw.ellipse([hx + 16 + eye_shift, hy - 18, hx + 32 + eye_shift, hy - 2], fill=black)
@@ -110,20 +111,17 @@ def draw_stickman_scene(pose, scene_idx, output_path):
     else:
         draw.arc([hx - 30, hy + 8, hx + 30, hy + 46], start=15, end=165, fill=black, width=8)
 
-    # Gavda (Torso)
     neck = (hx, hy + r)
     hip = (cx, 650)
     wobble_line(draw, [neck, ((neck[0] + hip[0]) // 2 + lean // 3, 530), hip], fill=black, width=11)
 
     shoulder = (hx + lean // 4, hy + r + 45)
 
-    # Qo'llar va oyoqlar + Red-Orange aksent elementlari
     if pose == "think":
         wobble_line(draw, [shoulder, (hx - 95, 520), (hx - 35, hy + r - 10)], fill=black, width=10)
         wobble_line(draw, [shoulder, (cx + 95, 540), (cx + 45, 640)], fill=black, width=10)
         wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
         wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
-        # Qizil-olovrang savol belgisi
         draw.arc([hx + 135, hy - 140, hx + 225, hy - 40], start=180, end=45, fill=accent, width=14)
         wobble_line(draw, [(hx + 215, hy - 55), (hx + 180, hy - 10)], fill=accent, width=14)
         draw.ellipse([hx + 170, hy + 8, hx + 190, hy + 28], fill=accent)
@@ -133,7 +131,6 @@ def draw_stickman_scene(pose, scene_idx, output_path):
         wobble_line(draw, [shoulder, (hx + 130, 360), (hx + 150, 260)], fill=black, width=10)
         wobble_line(draw, [hip, (cx - 95, 765), (cx - 110, 880)], fill=black, width=11)
         wobble_line(draw, [hip, (cx + 85, 765), (cx + 95, 880)], fill=black, width=11)
-        # Harakat chaqnashlari (Impact bursts)
         for bx, by in [(hx - 175, hy - 90), (hx + 175, hy - 90), (hx, hy - 155)]:
             wobble_line(draw, [(bx - 25, by - 25), (bx + 25, by + 25)], fill=accent, width=11)
             wobble_line(draw, [(bx + 25, by - 25), (bx - 25, by + 25)], fill=accent, width=11)
@@ -143,7 +140,6 @@ def draw_stickman_scene(pose, scene_idx, output_path):
         wobble_line(draw, [shoulder, (hx - 110, 500), (hx - 160, 560)], fill=black, width=10)
         wobble_line(draw, [hip, (cx + 120, 740), (cx + 185, 865)], fill=black, width=11)
         wobble_line(draw, [hip, (cx - 110, 750), (cx - 185, 845)], fill=black, width=11)
-        # Tezlik chiziqlari (Speed lines)
         for sy in [330, 430, 540, 640]:
             wobble_line(draw, [(420, sy), (640, sy)], fill=accent, width=10)
 
@@ -152,7 +148,6 @@ def draw_stickman_scene(pose, scene_idx, output_path):
         wobble_line(draw, [shoulder, (cx - 85, 540), (cx - 55, 640)], fill=black, width=10)
         wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
         wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
-        # Qizil-olovrang lampochka / miya impulsi
         bx, by = hx + 250, 270
         draw.ellipse([bx - 55, by - 55, bx + 55, by + 55], outline=accent, width=13)
         wobble_line(draw, [(bx - 25, by + 55), (bx + 25, by + 55)], fill=black, width=10)
@@ -171,18 +166,16 @@ def draw_stickman_scene(pose, scene_idx, output_path):
         wobble_line(draw, [shoulder, (cx - 85, 540), (cx - 55, 640)], fill=black, width=10)
         wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
         wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
-        # Nishon doirasi (Target)
         tx, ty = 1320, 430
         draw.ellipse([tx - 95, ty - 95, tx + 95, ty + 95], outline=black, width=10)
         draw.ellipse([tx - 45, ty - 45, tx + 45, ty + 45], outline=accent, width=12)
         draw.ellipse([tx - 14, ty - 14, tx + 14, ty + 14], fill=accent)
 
-    else:  # tired / happy
+    else:
         wobble_line(draw, [shoulder, (cx - 95, 560), (cx - 85, 660)], fill=black, width=10)
         wobble_line(draw, [shoulder, (cx + 95, 560), (cx + 85, 660)], fill=black, width=10)
         wobble_line(draw, [hip, (cx - 65, 770), (cx - 75, 880)], fill=black, width=11)
         wobble_line(draw, [hip, (cx + 65, 770), (cx + 75, 880)], fill=black, width=11)
-        # Energiya / yurak belgisi
         draw.ellipse([hx + 140, hy - 110, hx + 210, hy - 40], outline=accent, width=12)
 
     img.save(output_path, "PNG")
@@ -262,6 +255,64 @@ def create_scene_clip(img_path, audio_path, move, clip_path):
     )
 
 
+def upload_to_youtube(video_path, title, description):
+    print("YouTube'ga yuklash boshlandi...", flush=True)
+    token_file = None
+    for candidate in ["token.json", "youtube_token.json"]:
+        if os.path.exists(candidate):
+            token_file = candidate
+            break
+
+    if not token_file and os.environ.get("YOUTUBE_TOKEN_JSON"):
+        token_file = "token.json"
+        with open(token_file, "w", encoding="utf-8") as f:
+            f.write(os.environ["YOUTUBE_TOKEN_JSON"])
+
+    if not token_file:
+        raise RuntimeError("YouTube token fayli topilmadi (token.json).")
+
+    creds = Credentials.from_authorized_user_file(
+        token_file, ["https://www.googleapis.com/auth/youtube.upload"]
+    )
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+
+    youtube = build("youtube", "v3", credentials=creds)
+
+    # Toshkent vaqti (UTC+5) bilan soat 16:00 ga rejalashtirish (16:00 UZT = 11:00 UTC)
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    publish_utc = now_utc.replace(hour=11, minute=0, second=0, microsecond=0)
+    if publish_utc <= now_utc + datetime.timedelta(minutes=15):
+        publish_utc = publish_utc + datetime.timedelta(days=1)
+    publish_at = publish_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    body = {
+        "snippet": {
+            "title": title[:95],
+            "description": description + "\n\n#nimauchun #stickman #qiziqarlifaktlar #ilm",
+            "tags": ["nima uchun", "stickman", "qiziqarli faktlar", "psixologiya", "ilm fan"],
+            "categoryId": "27",
+        },
+        "status": {
+            "privacyStatus": "private",
+            "publishAt": publish_at,
+            "selfDeclaredMadeForKids": False,
+        },
+    }
+
+    media = MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/mp4")
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+        if status:
+            print("Yuklanmoqda:", int(status.progress() * 100), "%", flush=True)
+
+    print("MUVAFFAQIYATLI YUKLANDI! Video ID:", response.get("id"), flush=True)
+    print("Rejalashtirilgan vaqt (UTC):", publish_at, "(Toshkent 16:00)", flush=True)
+
+
 def main():
     os.makedirs("build", exist_ok=True)
     pack = generate_script()
@@ -305,19 +356,8 @@ def main():
         check=True,
     )
 
-    with open("metadata.json", "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "title": pack["title_uz"],
-                "description": pack["description_uz"],
-                "tags": ["nima uchun", "stickman", "qiziqarli faktlar", "psixologiya", "ilm fan"],
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
     print("TAYYOR! Video muvaffaqiyatli yig'ildi: final_video.mp4", flush=True)
+    upload_to_youtube("final_video.mp4", pack["title_uz"], pack["description_uz"])
 
 
 if __name__ == "__main__":
