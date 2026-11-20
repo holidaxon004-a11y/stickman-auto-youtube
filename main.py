@@ -62,9 +62,7 @@ def generate_script():
 
 
 def configure_flow_models(page):
-    """Google Flow'da rasm uchun Nano Banana 2.1 va video uchun 6 kreditli modelni tanlash."""
     try:
-        # 1. Model / Settings menyularini tekshirish
         for trigger_text in ["Veo", "Imagen", "Nano", "Model", "Quality", "Fast", "Settings", "tune"]:
             btns = page.locator(f"button:has-text('{trigger_text}')")
             for i in range(btns.count()):
@@ -72,13 +70,11 @@ def configure_flow_models(page):
                 if b.is_visible():
                     b.click()
                     time.sleep(1.2)
-                    # Rasm modeli: Nano Banana 2.1
                     nb = page.locator("text=/Nano Banana 2\\.1/i").first
                     if nb.count() > 0 and nb.is_visible():
                         nb.click()
                         print("Selected image model: Nano Banana 2.1", flush=True)
                         time.sleep(1)
-                    # Video modeli: 6 kredit sarflaydigan (Fast / 6 credits) variant
                     v6 = page.locator("text=/6\\s*credit|Fast.*6|Veo.*Fast/i").first
                     if v6.count() > 0 and v6.is_visible():
                         v6.click()
@@ -150,10 +146,6 @@ def generate_flow_assets(scenes):
                 prompt_text = f"{sc['flow_prompt']}. {STYLE_LOCK}"
                 print(f"[Flow {idx}/{len(scenes)}] Generating: {sc['flow_prompt'][:55]}...", flush=True)
                 try:
-                    # Har sahna oldidan 6-kreditli rejim va Nano Banana 2.1 faolligini tekshirish
-                    if idx == 1:
-                        configure_flow_models(page)
-
                     box = page.locator("textarea, [contenteditable='true']").first
                     box.wait_for(state="visible", timeout=15000)
                     box.click()
@@ -256,32 +248,28 @@ def format_ass_time(sec):
 
 
 def create_styled_cc(text_en, duration, ass_path):
-    """Chiroyli pop-in va glow effektli dinamik CC (subtitr) faylini yaratish."""
     words = (text_en or "").strip().split()
     if not words:
         words = ["Why", "does", "this", "happen?"]
 
-    # Har bir kadrda 3-4 tadan so'z chiqishi (zamonaviy YouTube retention CC)
     chunks = [" ".join(words[i:i + 4]) for i in range(0, len(words), 4)]
     step = duration / len(chunks)
 
-    header = """[Script Info]
-ScriptType: v4.00+
-PlayResX: 1280
-PlayResY: 720
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: PopCC,DejaVu Sans,46,&H00FFFFFF,&H000066FF,&H00141414,&H80000000,-1,0,0,0,100,100,1,0,1,4,2,2,60,60,48,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1280\n"
+        "PlayResY: 720\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: PopCC,DejaVu Sans,46,&H00FFFFFF,&H000066FF,&H00141414,&H80000000,-1,0,0,0,100,100,1,0,1,4,2,2,60,60,48,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
     lines = [header]
     for idx, chunk in enumerate(chunks):
         t0 = idx * step
         t1 = (idx + 1) * step
-        # Pop-in zoom effekti (\fscx85\fscy85 -> \fscx103\fscy103 -> \fscx100\fscy100)
         styled_text = (
             r"{\fscx82\fscy82\t(0,110,\fscx104\fscy104)\t(110,220,\fscx100\fscy100)}"
             + chunk.upper()
@@ -308,7 +296,6 @@ def build_scene_clip(s_idx, asset_path, text_en, aud_path, move, clip_path):
     else:
         z = "zoom='1.08':x='(iw-iw/zoom)*(1-on/" + f_str + ")':y='ih/2-(ih/zoom/2)'"
 
-    # Chiroyli montaj effekti: silliq kirish (fade) + yumshoq vignette + pop-in CC subtitrlar
     post_fx = f"fade=t=in:st=0:d=0.22,vignette=PI/6,ass='{ass_esc}',format=yuv420p"
 
     if asset_path and asset_path.endswith(".mp4"):
@@ -361,4 +348,45 @@ def upload_youtube(video_path, title, desc):
             "categoryId": "27",
         },
         "status": {
-            "privacyStatus
+            "privacyStatus": "private",
+            "publishAt": pub.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "selfDeclaredMadeForKids": False,
+        },
+    }
+    media = MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/mp4")
+    req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
+    resp = None
+    while resp is None:
+        st, resp = req.next_chunk()
+        if st:
+            print("Progress:", int(st.progress() * 100), "%", flush=True)
+    print("UPLOADED! Video ID:", resp.get("id"), flush=True)
+
+
+def main():
+    os.makedirs("build", exist_ok=True)
+    pack = generate_script()
+    scenes = pack["scenes"][:35]
+    print("Topic:", pack["title_en"], "| Scenes:", len(scenes), flush=True)
+
+    flow_assets = generate_flow_assets(scenes)
+    clips = []
+    for idx, sc in enumerate(scenes, start=1):
+        print(f"--- Compiling Scene {idx}/{len(scenes)} ---", flush=True)
+        aud = f"build/scene_{idx}.mp3"
+        clp = f"build/clip_{idx}.mp4"
+        asyncio.run(generate_voice(sc["narration_en"], aud))
+        build_scene_clip(idx, flow_assets.get(idx), sc["narration_en"], aud, sc.get("camera_move", "zoom_in"), clp)
+        clips.append(clp)
+
+    with open("build/clips.txt", "w") as f:
+        for c in clips:
+            f.write("file '" + os.path.abspath(c) + "'\n")
+
+    subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "build/clips.txt", "-c", "copy", "final_video.mp4"], check=True)
+    print("DONE: final_video.mp4", flush=True)
+    upload_youtube("final_video.mp4", pack["title_en"], pack["description_en"])
+
+
+if __name__ == "__main__":
+    main()
