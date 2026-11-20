@@ -103,14 +103,23 @@ def generate_flow_assets(scenes):
 
     clean_cookies = []
     for c in raw_cookies:
+        if not c.get("name") or not c.get("value"):
+            continue
         item = {
-            "name": c["name"],
-            "value": c["value"],
-            "domain": c.get("domain", ".google.com"),
-            "path": c.get("path", "/"),
+            "name": str(c["name"]),
+            "value": str(c["value"]),
+            "domain": str(c.get("domain", ".google.com")),
+            "path": str(c.get("path", "/")),
         }
+        if c.get("secure") is not None:
+            item["secure"] = bool(c["secure"])
+        if c.get("httpOnly") is not None:
+            item["httpOnly"] = bool(c["httpOnly"])
         if c.get("sameSite") in ("Strict", "Lax", "None"):
             item["sameSite"] = c["sameSite"]
+        if item["name"].startswith("__Host-"):
+            item.pop("domain", None)
+            item["url"] = "https://flow.google.com/"
         clean_cookies.append(item)
 
     with sync_playwright() as p:
@@ -119,7 +128,11 @@ def generate_flow_assets(scenes):
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
         )
         context = browser.new_context(viewport={"width": 1440, "height": 900})
-        context.add_cookies(clean_cookies)
+        for ck in clean_cookies:
+            try:
+                context.add_cookies([ck])
+            except Exception:
+                pass
         page = context.new_page()
 
         try:
@@ -192,9 +205,7 @@ def generate_flow_assets(scenes):
             browser.close()
 
     return results
-
-
-def draw_fallback_frame(s_idx, f_idx, out_path):
+    def draw_fallback_frame(s_idx, f_idx, out_path):
     img = Image.new("RGB", (1280, 720), (252, 252, 250))
     d = ImageDraw.Draw(img)
     blk, acc = (22, 22, 24), (232, 68, 42)
